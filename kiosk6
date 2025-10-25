@@ -1,0 +1,212 @@
+#!/bin/bash
+# Ubuntu 24.04.3 Server → Animated Microsoft Edge Kiosk
+# Splash & offline pages with #3055A0 accent, TTS messages
+# Run as root
+
+set -e
+
+echo "=== Updating system ==="
+apt update && apt upgrade -y
+
+echo "=== Installing core packages ==="
+apt install --no-install-recommends -y \
+    xorg openbox xinit dbus-x11 pulseaudio alsa-utils \
+    curl wget nano systemd-cron espeak espeak-ng xdg-utils x11-xserver-utils xdotool
+
+echo "=== Adding Microsoft Edge repository and installing Edge ==="
+curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg
+install -o root -g root -m 644 microsoft.gpg /etc/apt/trusted.gpg.d/
+sh -c 'echo "deb [arch=amd64] https://packages.microsoft.com/repos/edge stable main" > /etc/apt/sources.list.d/microsoft-edge.list'
+apt update
+apt install microsoft-edge-stable -y
+rm microsoft.gpg
+
+echo "=== Disabling systemd-networkd-wait-online ==="
+systemctl disable systemd-networkd-wait-online.service
+systemctl mask systemd-networkd-wait-online.service
+
+# Create kiosk user if missing
+if ! id "kiosk" &>/dev/null; then
+    adduser kiosk --gecos "" --disabled-password
+fi
+
+echo "=== Configuring auto-login ==="
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+cat >/etc/systemd/system/getty@tty1.service.d/override.conf <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin kiosk --noclear %I $TERM
+Type=idle
+EOF
+systemctl daemon-reexec
+systemctl daemon-reload
+
+echo "=== Setting up kiosk environment for 'kiosk' user ==="
+su - kiosk -s /bin/bash <<'EOF'
+set -e
+
+# Auto-start X session
+cat > ~/.bash_profile <<'EOB'
+if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
+  startx
+fi
+EOB
+
+# X session startup with splash/offline transitions
+cat > ~/.xinitrc <<'EOC'
+#!/bin/bash
+xset s off
+xset -dpms
+xset s noblank
+
+XRANDR_OUTPUT=$(xrandr | grep ' connected' | awk '{print $1}')
+xrandr --output "$XRANDR_OUTPUT" --mode 1920x1080
+
+pulseaudio --start
+sleep 2
+amixer -D pulse sset Master 100% || true
+
+TARGET_URL="http://server02:4040/Tracking/Scanner"
+SPLASH_HTML="file:///home/kiosk/kiosk_splash.html"
+OFFLINE_HTML="file:///home/kiosk/kiosk_offline.html"
+
+OFFLINE_FLAG=1
+ONLINE_FLAG=0
+FIRST_CONNECTION=1
+
+while true; do
+    # Wait for network
+    while ! ping -c1 8.8.8.8 &>/dev/null; do
+        if [ $OFFLINE_FLAG -eq 0 ]; then
+            espeak-ng "Attention. The scanning station is offline."
+            OFFLINE_FLAG=1
+            ONLINE_FLAG=0
+        fi
+        pkill microsoft-edge || true
+        microsoft-edge --app="$OFFLINE_HTML" >/dev/null 2>&1 &
+        sleep 5
+    done
+
+    if [ $FIRST_CONNECTION -eq 1 ]; then
+        espeak-ng "Network available, loading scanning station"
+        FIRST_CONNECTION=0
+    elif [ $ONLINE_FLAG -eq 0 ]; then
+        espeak-ng "Network restored. Scanning station live."
+        ONLINE_FLAG=1
+        OFFLINE_FLAG=0
+    fi
+
+    # Show splash with fade-out
+    pkill microsoft-edge || true
+    microsoft-edge --app="$SPLASH_HTML" >/dev/null 2>&1 &
+    SPLASH_PID=$!
+    sleep 2
+    pkill -P $SPLASH_PID || true
+
+    # Launch Edge kiosk
+    microsoft-edge --kiosk "$TARGET_URL" \
+        --no-first-run \
+        --disable-infobars \
+        --autoplay-policy=no-user-gesture-required \
+        --window-size=1920,1080 \
+        --window-position=0,0 >/dev/null 2>&1 &
+    EDGE_PID=$!
+
+    while kill -0 $EDGE_PID 2>/dev/null; do
+        sleep 5
+    done
+
+    echo "Edge crashed or closed. Restarting in 5s..."
+    sleep 5
+done
+EOC
+
+chmod +x ~/.xinitrc
+
+# Create splash page
+cat > ~/kiosk_splash.html <<'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Loading Scanning Station</title>
+<style>
+body { margin:0; height:100vh; display:flex; justify-content:center; align-items:center; background-color:#000; font-family:Arial,Helvetica,sans-serif; color:#3055A0; flex-direction:column; opacity:1; transition: opacity 1s ease-in-out; }
+h1 { font-weight:bold; font-size:2.5em; margin-bottom:40px; animation:fadeIn 1.5s forwards; }
+@keyframes fadeIn { from{opacity:0;} to{opacity:1;} }
+.loader { display:flex; gap:10px; }
+.loader span { width:15px; height:15px; background:#3055A0; border-radius:50%; animation:bounce 1.2s infinite ease-in-out; }
+.loader span:nth-child(1){ animation-delay:0s; }
+.loader span:nth-child(2){ animation-delay:0.2s; }
+.loader span:nth-child(3){ animation-delay:0.4s; }
+@keyframes bounce { 0%,80%,100%{transform:scale(0);} 40%{transform:scale(1);} }
+</style>
+</head>
+<body id="body">
+<h1>Loading Scanning Station</h1>
+<div class="loader"><span></span><span></span><span></span></div>
+</body>
+</html>
+EOF
+
+# Create offline page
+cat > ~/kiosk_offline.html <<'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Offline</title>
+<style>
+body { margin:0; height:100vh; display:flex; flex-direction:column; justify-content:center; align-items:center; background-color:#000; color:#3055A0; font-family:Arial,Helvetica,sans-serif; transform:translateY(100%); transition: transform 0.8s ease-in-out;}
+body.show { transform:translateY(0); }
+h1 { font-size:3em; margin-bottom:20px; text-shadow:0 0 10px #3055A0; animation:pulse 1.5s infinite; }
+@keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.5;} }
+#timer { font-size:1.5em; color:#fff; margin-top:10px; }
+.progress-bar { width:300px; height:15px; background:#111; border-radius:8px; overflow:hidden; margin-top:30px; }
+.progress-bar-inner { height:100%; width:0%; background:linear-gradient(90deg,#3055A0,#6090D0); animation:load 10s linear forwards; border-radius:8px; }
+@keyframes load { from{width:0%;} to{width:100%;} }
+</style>
+</head>
+<body id="body">
+<h1>Network Disconnected</h1>
+<div id="timer">Rechecking network in 10s...</div>
+<div class="progress-bar"><div class="progress-bar-inner"></div></div>
+<script>
+document.getElementById('body').classList.add('show');
+let retry=10;
+function countdown(){ document.getElementById('timer').textContent=`Rechecking network in ${retry}s...`; if(retry>0){retry--; setTimeout(countdown,1000);} else{ location.reload(); } }
+window.onload=countdown;
+</script>
+</body>
+</html>
+EOF
+
+EOF
+
+# Force 1920x1080 resolution in X config
+mkdir -p /etc/X11/xorg.conf.d
+cat >/etc/X11/xorg.conf.d/10-monitor.conf <<'EOF'
+Section "Monitor"
+    Identifier "Monitor0"
+    Option "PreferredMode" "1920x1080"
+EndSection
+Section "Screen"
+    Identifier "Screen0"
+    Device "Device0"
+    Monitor "Monitor0"
+    SubSection "Display"
+        Modes "1920x1080"
+    EndSubSection
+EndSection
+EOF
+
+# Hardening & daily reboot
+systemctl mask ctrl-alt-del.target
+cat >/etc/cron.d/kiosk-reboot <<'EOF'
+0 3 * * * root /sbin/reboot
+EOF
+chmod 644 /etc/cron.d/kiosk-reboot
+
+echo "=== Setup complete. Rebooting in 5 seconds ==="
+sleep 5
+reboot
