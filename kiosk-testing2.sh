@@ -133,7 +133,7 @@ xset s noblank
 for i in {1..5}; do pulseaudio --start && break; sleep 2; done
 amixer -D pulse sset Master 100% || true
 
-TARGET_URL="https://portal.centralmailing.co.uk/Tracking/Scanner"
+TARGET_URL="https://server02:4040/Tracking/Scanner"
 FALLBACK_URL="file://$HOME/kiosk-fallback/splash.html"
 
 while true; do
