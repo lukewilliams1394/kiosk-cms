@@ -1,6 +1,6 @@
 #!/bin/bash
 # Ubuntu 24.04.3 Server → Animated Microsoft Edge Kiosk
-# Splash & offline pages with #3055A0 accent, TTS messages
+# Splash & offline pages with #3055A0 accent, TTS messages, fade transitions
 # Run as root
 
 set -e
@@ -32,28 +32,28 @@ fi
 
 echo "=== Configuring auto-login ==="
 mkdir -p /etc/systemd/system/getty@tty1.service.d
-cat >/etc/systemd/system/getty@tty1.service.d/override.conf <<'EOF'
+cat >/etc/systemd/system/getty@tty1.service.d/override.conf <<'AUTOLOGIN_EOF'
 [Service]
 ExecStart=
 ExecStart=-/sbin/agetty --autologin kiosk --noclear %I $TERM
 Type=idle
-EOF
+AUTOLOGIN_EOF
 systemctl daemon-reexec
 systemctl daemon-reload
 
 echo "=== Setting up kiosk environment for 'kiosk' user ==="
-su - kiosk -s /bin/bash <<'EOF'
+su - kiosk -s /bin/bash <<'KIOSK_EOF'
 set -e
 
 # Auto-start X session
-cat > ~/.bash_profile <<'EOB'
+cat > ~/.bash_profile <<'BPROFILE_EOF'
 if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
   startx
 fi
-EOB
+BPROFILE_EOF
 
-# X session startup with splash/offline transitions
-cat > ~/.xinitrc <<'EOC'
+# X session startup with splash/offline transitions and fade-out
+cat > ~/.xinitrc <<'XINIT_EOF'
 #!/bin/bash
 xset s off
 xset -dpms
@@ -75,7 +75,7 @@ ONLINE_FLAG=0
 FIRST_CONNECTION=1
 
 while true; do
-    # Wait for network
+    # Show offline page if network is down
     while ! ping -c1 8.8.8.8 &>/dev/null; do
         if [ $OFFLINE_FLAG -eq 0 ]; then
             espeak-ng "Attention. The scanning station is offline."
@@ -84,8 +84,17 @@ while true; do
         fi
         pkill microsoft-edge || true
         microsoft-edge --app="$OFFLINE_HTML" >/dev/null 2>&1 &
+        OFFLINE_PID=$!
         sleep 5
     done
+
+    # Network is back: fade out offline page
+    if [ $OFFLINE_FLAG -eq 1 ]; then
+        # Use xdotool to refresh page (fade handled in HTML via JS)
+        xdotool search --pid $OFFLINE_PID windowactivate --sync key F5
+        sleep 0.5
+        pkill -P $OFFLINE_PID
+    fi
 
     if [ $FIRST_CONNECTION -eq 1 ]; then
         espeak-ng "Network available, loading scanning station"
@@ -96,7 +105,7 @@ while true; do
         OFFLINE_FLAG=0
     fi
 
-    # Show splash with fade-out
+    # Show splash screen
     pkill microsoft-edge || true
     microsoft-edge --app="$SPLASH_HTML" >/dev/null 2>&1 &
     SPLASH_PID=$!
@@ -119,12 +128,12 @@ while true; do
     echo "Edge crashed or closed. Restarting in 5s..."
     sleep 5
 done
-EOC
+XINIT_EOF
 
 chmod +x ~/.xinitrc
 
 # Create splash page
-cat > ~/kiosk_splash.html <<'EOF'
+cat > ~/kiosk_splash.html <<'SPLASH_EOF'
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -147,21 +156,29 @@ h1 { font-weight:bold; font-size:2.5em; margin-bottom:40px; animation:fadeIn 1.5
 <div class="loader"><span></span><span></span><span></span></div>
 </body>
 </html>
-EOF
+SPLASH_EOF
 
-# Create offline page
-cat > ~/kiosk_offline.html <<'EOF'
+# Create offline page with fade-out support
+cat > ~/kiosk_offline.html <<'OFFLINE_EOF'
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <title>Offline</title>
 <style>
-body { margin:0; height:100vh; display:flex; flex-direction:column; justify-content:center; align-items:center; background-color:#000; color:#3055A0; font-family:Arial,Helvetica,sans-serif; transform:translateY(100%); transition: transform 0.8s ease-in-out;}
-body.show { transform:translateY(0); }
+body { 
+  margin:0; height:100vh; display:flex; flex-direction:column; justify-content:center; align-items:center; 
+  background-color:#000; color:#3055A0; font-family:Arial,Helvetica,sans-serif; 
+  transform:translateY(100%); opacity:0; transition: transform 0.8s ease-in-out, opacity 0.8s ease-in-out;
+}
+body.show { transform:translateY(0); opacity:1; }
+body.fadeout { opacity:0; }
+
 h1 { font-size:3em; margin-bottom:20px; text-shadow:0 0 10px #3055A0; animation:pulse 1.5s infinite; }
 @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.5;} }
+
 #timer { font-size:1.5em; color:#fff; margin-top:10px; }
+
 .progress-bar { width:300px; height:15px; background:#111; border-radius:8px; overflow:hidden; margin-top:30px; }
 .progress-bar-inner { height:100%; width:0%; background:linear-gradient(90deg,#3055A0,#6090D0); animation:load 10s linear forwards; border-radius:8px; }
 @keyframes load { from{width:0%;} to{width:100%;} }
@@ -171,21 +188,33 @@ h1 { font-size:3em; margin-bottom:20px; text-shadow:0 0 10px #3055A0; animation:
 <h1>Network Disconnected</h1>
 <div id="timer">Rechecking network in 10s...</div>
 <div class="progress-bar"><div class="progress-bar-inner"></div></div>
+
 <script>
-document.getElementById('body').classList.add('show');
+const body = document.getElementById('body');
+body.classList.add('show');
+
 let retry=10;
-function countdown(){ document.getElementById('timer').textContent=`Rechecking network in ${retry}s...`; if(retry>0){retry--; setTimeout(countdown,1000);} else{ location.reload(); } }
-window.onload=countdown;
+function countdown(){
+  document.getElementById('timer').textContent=`Rechecking network in ${retry}s...`;
+  if(retry>0){ retry--; setTimeout(countdown,1000); }
+}
+window.onload = countdown;
+
+// Function to fade out offline page
+function fadeOut(callback){
+  body.classList.add('fadeout');
+  setTimeout(callback, 800);
+}
 </script>
 </body>
 </html>
-EOF
+OFFLINE_EOF
 
-EOF
+KIOSK_EOF
 
 # Force 1920x1080 resolution in X config
 mkdir -p /etc/X11/xorg.conf.d
-cat >/etc/X11/xorg.conf.d/10-monitor.conf <<'EOF'
+cat >/etc/X11/xorg.conf.d/10-monitor.conf <<'XORG_EOF'
 Section "Monitor"
     Identifier "Monitor0"
     Option "PreferredMode" "1920x1080"
@@ -198,13 +227,13 @@ Section "Screen"
         Modes "1920x1080"
     EndSubSection
 EndSection
-EOF
+XORG_EOF
 
 # Hardening & daily reboot
 systemctl mask ctrl-alt-del.target
-cat >/etc/cron.d/kiosk-reboot <<'EOF'
+cat >/etc/cron.d/kiosk-reboot <<'CRON_EOF'
 0 3 * * * root /sbin/reboot
-EOF
+CRON_EOF
 chmod 644 /etc/cron.d/kiosk-reboot
 
 echo "=== Setup complete. Rebooting in 5 seconds ==="
