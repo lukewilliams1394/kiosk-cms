@@ -114,7 +114,7 @@ pulseaudio --start
 sleep 2
 amixer -D pulse sset Master 100% || true
 
-TARGET_URL="https://portal.centralmailing.co.uk/Tracking/Scanner"
+TARGET_URL="http://server02:4040/Tracking/Scanner"
 SPLASH_URL="file://$HOME/kiosk-fallback/splash.html"
 SPLASH_PROFILE="$HOME/firefox-profiles/splash"
 LIVE_PROFILE="$HOME/firefox-profiles/live"
