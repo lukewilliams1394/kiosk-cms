@@ -41,6 +41,15 @@ EOF
 systemctl daemon-reexec
 systemctl daemon-reload
 
+echo "=== Creating kiosk auto-start profile ==="
+sudo -u kiosk bash -c 'cat > /home/kiosk/.bash_profile <<EOP
+if [ -z "\$DISPLAY" ] && [ "\$(tty)" = "/dev/tty1" ]; then
+  startx
+fi
+EOP
+chmod +x /home/kiosk/.bash_profile
+'
+
 echo "=== Setting up kiosk environment ==="
 su - kiosk -s /bin/bash <<'EOF'
 set -e
@@ -135,7 +144,7 @@ let remaining = RETRY_INTERVAL;
 const timer=document.getElementById('timer');
 const bar=document.getElementById('bar');
 function updateUI(){
-  timer.textContent=`Rechecking network in ${remaining}s…`;
+  timer.textContent=\`Rechecking network in \${remaining}s…\`;
   bar.style.width=((RETRY_INTERVAL-remaining)/RETRY_INTERVAL*100)+'%';
 }
 async function checkOnline(){
@@ -191,7 +200,9 @@ check_network() {
 
 launch_edge() {
     pkill microsoft-edge || true
-    microsoft-edge --kiosk --window-size=1920,1080 --window-position=0,0 "$1" --no-first-run --disable-infobars >/dev/null 2>&1 &
+    microsoft-edge --start-fullscreen --kiosk \
+      --window-size=1920,1080 --window-position=0,0 \
+      "$1" --no-first-run --disable-infobars >/dev/null 2>&1 &
     echo $!
 }
 
@@ -210,7 +221,7 @@ show_offline() {
 
 launch_kiosk() {
     echo "[KIOSK] Launching scanner app..."
-    microsoft-edge --kiosk "$TARGET_URL" \
+    microsoft-edge --start-fullscreen --kiosk "$TARGET_URL" \
         --no-first-run --disable-infobars \
         --autoplay-policy=no-user-gesture-required >/dev/null 2>&1 &
     echo $!
@@ -226,7 +237,7 @@ while true; do
     fi
 
     KIOSK_PID=$(launch_kiosk)
-    espeak-ng "Network available, loading scanning station"
+    espeak-ng "Network available. Loading scanning station."
 
     while kill -0 $KIOSK_PID 2>/dev/null; do
         if ! check_network; then
