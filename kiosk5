@@ -97,7 +97,6 @@ while true; do
     microsoft-edge --kiosk "$TARGET_URL" \
         --no-first-run \
         --disable-infobars \
-        --inprivate \
         --autoplay-policy=no-user-gesture-required \
         --window-size=1920,1080 \
         --window-position=0,0 >/dev/null 2>&1 &
