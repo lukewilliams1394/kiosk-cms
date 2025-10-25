@@ -54,7 +54,7 @@ pulseaudio --start
 sleep 2
 amixer -D pulse sset Master 100% || true
 
-TARGET_URL="https://server02:4040/Tracking/Scanner"
+TARGET_URL="http://server02:4040/Tracking/Scanner"
 OFFLINE_FLAG=1
 ONLINE_FLAG=0
 
