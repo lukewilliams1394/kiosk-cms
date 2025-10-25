@@ -1,0 +1,262 @@
+#!/bin/bash
+# Ubuntu 24.04.3 Server → Microsoft Edge Kiosk with Animated Splash + Offline Screen
+# Run as root
+
+set -e
+
+echo "=== Updating system ==="
+apt update && apt upgrade -y
+
+echo "=== Installing core packages ==="
+apt install --no-install-recommends -y \
+    xorg openbox xinit dbus-x11 pulseaudio alsa-utils \
+    curl wget nano systemd-cron espeak espeak-ng xdg-utils x11-xserver-utils
+
+echo "=== Adding Microsoft Edge repository ==="
+curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg
+install -o root -g root -m 644 microsoft.gpg /etc/apt/trusted.gpg.d/
+echo "deb [arch=amd64] https://packages.microsoft.com/repos/edge stable main" > /etc/apt/sources.list.d/microsoft-edge.list
+apt update
+apt install -y microsoft-edge-stable
+rm microsoft.gpg
+
+echo "=== Disabling systemd-networkd-wait-online ==="
+systemctl disable systemd-networkd-wait-online.service
+systemctl mask systemd-networkd-wait-online.service
+
+# Create kiosk user if missing
+if ! id "kiosk" &>/dev/null; then
+    adduser kiosk --gecos "" --disabled-password
+fi
+
+echo "=== Configuring auto-login for kiosk user ==="
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+cat >/etc/systemd/system/getty@tty1.service.d/override.conf <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin kiosk --noclear %I $TERM
+Type=idle
+EOF
+systemctl daemon-reexec
+systemctl daemon-reload
+
+echo "=== Setting up kiosk environment for 'kiosk' user ==="
+su - kiosk -s /bin/bash <<'EOF'
+set -e
+mkdir -p ~/kiosk_assets
+
+# Auto-start X session
+cat > ~/.bash_profile <<'EOB'
+if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
+  startx
+fi
+EOB
+
+# ---------------------------
+# SPLASH SCREEN HTML
+# ---------------------------
+cat > ~/kiosk_splash.html <<'EOC'
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Loading Scanning Station</title>
+<style>
+html,body{height:100%;margin:0;background:#000;color:#3055A0;
+display:flex;align-items:center;justify-content:center;
+font-family:Arial,Helvetica,sans-serif;overflow:hidden;}
+.container{text-align:center;animation:fadein 1s ease;}
+h1{font-size:2.2rem;margin-bottom:1.2rem;}
+.dots span{animation:blink 1.4s infinite;}
+.dots span:nth-child(2){animation-delay:.2s;}
+.dots span:nth-child(3){animation-delay:.4s;}
+@keyframes blink{0%,80%,100%{opacity:0;}40%{opacity:1;}}
+@keyframes fadein{from{opacity:0;}to{opacity:1;}}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Loading Scanning Station</h1>
+  <div class="dots"><span>.</span><span>.</span><span>.</span></div>
+</div>
+<script>
+setTimeout(()=>window.close(),2500);
+</script>
+</body>
+</html>
+EOC
+
+# ---------------------------
+# OFFLINE SCREEN HTML
+# ---------------------------
+cat > ~/kiosk_offline.html <<'EOC'
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Network Disconnected</title>
+<style>
+html,body{height:100%;margin:0;padding:0;background:#000;color:#3055A0;
+font-family:Arial,Helvetica,sans-serif;display:flex;align-items:center;
+justify-content:center;flex-direction:column;overflow:hidden;}
+.container{transition:opacity .8s ease,transform .8s ease;text-align:center;}
+.container.hidden{opacity:0;transform:translateY(5%);}
+h1{font-size:2.4rem;margin:0 0 12px;text-shadow:0 0 10px rgba(48,85,160,.6);}
+#timer{margin-top:6px;font-size:1.1rem;color:#fff;opacity:.95;}
+.progress{width:350px;max-width:90%;height:12px;background:#111;border-radius:8px;
+overflow:hidden;margin-top:22px;box-shadow:inset 0 0 8px rgba(0,0,0,.6);}
+.progress .bar{height:100%;width:0%;background:linear-gradient(90deg,#3055A0,#5078C8);
+transition:width 1s linear;}
+.hint{margin-top:20px;color:#999;font-size:.9rem;}
+</style>
+</head>
+<body>
+<div id="wrap" class="container">
+<h1>Network Disconnected</h1>
+<div id="timer">Rechecking network in 10s…</div>
+<div class="progress"><div id="bar" class="bar"></div></div>
+<div class="hint">The station will retry automatically.</div>
+</div>
+<script>
+const RETRY_INTERVAL=10;
+let remaining=RETRY_INTERVAL;
+const timerEl=document.getElementById('timer');
+const bar=document.getElementById('bar');
+const wrap=document.getElementById('wrap');
+function updateUI(){
+  timerEl.textContent=\`Rechecking network in \${remaining}s…\`;
+  bar.style.width=((RETRY_INTERVAL-remaining)/RETRY_INTERVAL*100)+'%';
+}
+async function checkOnline(){
+  if(navigator.onLine===false)return false;
+  try{
+    const c=new AbortController();
+    const t=setTimeout(()=>c.abort(),3000);
+    await fetch("https://dns.google/resolve?name=example.com",{signal:c.signal,cache:"no-store"});
+    clearTimeout(t);return true;
+  }catch{return false;}
+}
+function startCountdown(){
+  updateUI();
+  const tick=setInterval(async()=>{
+    remaining--;updateUI();
+    if(remaining<=0){
+      clearInterval(tick);
+      if(await checkOnline()){fadeOutAndClose();}
+      else{remaining=RETRY_INTERVAL;startCountdown();}
+    }
+  },1000);
+}
+function fadeOutAndClose(){
+  wrap.classList.add('hidden');
+  setTimeout(()=>{try{window.close();}catch{}},900);
+}
+window.addEventListener('online',async()=>{if(await checkOnline())fadeOutAndClose();});
+startCountdown();
+</script>
+</body>
+</html>
+EOC
+
+# ---------------------------
+# XINITRC (Main Kiosk Control)
+# ---------------------------
+cat > ~/.xinitrc <<'EOC'
+#!/bin/bash
+xset s off
+xset -dpms
+xset s noblank
+
+XRANDR_OUTPUT=$(xrandr | grep " connected" | awk '{print $1}' | head -n1)
+if [ -n "$XRANDR_OUTPUT" ]; then
+  xrandr --output "$XRANDR_OUTPUT" --mode 1920x1080 || true
+fi
+
+pulseaudio --start
+sleep 2
+amixer -D pulse sset Master 100% || true
+
+SPLASH_HTML="file:///home/kiosk/kiosk_splash.html"
+OFFLINE_HTML="file:///home/kiosk/kiosk_offline.html"
+TARGET_URL="http://server02:4040/Tracking/Scanner"
+
+ONLINE=0
+OFFLINE=0
+FIRST_BOOT=1
+
+kill_edge(){ pkill microsoft-edge || true; sleep 1; }
+launch_edge(){
+  microsoft-edge --kiosk "$1" --start-fullscreen \
+  --window-size=1920,1080 --window-position=0,0 \
+  --no-first-run --disable-infobars \
+  --autoplay-policy=no-user-gesture-required >/dev/null 2>&1 &
+  echo $!
+}
+network_watch(){
+  while true; do
+    if ping -c1 -W2 8.8.8.8 &>/dev/null; then ONLINE=1; OFFLINE=0; else ONLINE=0; OFFLINE=1; fi
+    sleep 5
+  done
+}
+network_watch &
+
+while true; do
+  if [ $OFFLINE -eq 1 ]; then
+    espeak-ng "Attention. The scanning station is offline."
+    kill_edge
+    launch_edge "$OFFLINE_HTML"
+    while [ $OFFLINE -eq 1 ]; do sleep 3; done
+    espeak-ng "Network restored. Scanning station live."
+  fi
+
+  if [ $FIRST_BOOT -eq 1 ]; then
+    espeak-ng "Network available, loading scanning station"
+    FIRST_BOOT=0
+  fi
+
+  kill_edge
+  SPLASH_PID=$(launch_edge "$SPLASH_HTML")
+  wait $SPLASH_PID || true
+
+  kill_edge
+  EDGE_PID=$(launch_edge "$TARGET_URL")
+  while kill -0 $EDGE_PID 2>/dev/null; do
+    if [ $OFFLINE -eq 1 ]; then kill_edge; break; fi
+    sleep 5
+  done
+  sleep 3
+done
+EOC
+chmod +x ~/.xinitrc
+EOF
+
+# ---------------------------
+# XORG CONFIG (Resolution)
+# ---------------------------
+mkdir -p /etc/X11/xorg.conf.d
+cat >/etc/X11/xorg.conf.d/10-monitor.conf <<'EOF'
+Section "Monitor"
+    Identifier "Monitor0"
+    Option "PreferredMode" "1920x1080"
+EndSection
+Section "Screen"
+    Identifier "Screen0"
+    Device "Device0"
+    Monitor "Monitor0"
+    SubSection "Display"
+        Modes "1920x1080"
+    EndSubSection
+EndSection
+EOF
+
+# Daily reboot
+echo "0 3 * * * root /sbin/reboot" >/etc/cron.d/kiosk-reboot
+chmod 644 /etc/cron.d/kiosk-reboot
+
+systemctl mask ctrl-alt-del.target
+
+echo "=== Setup complete. Rebooting in 5 seconds ==="
+sleep 5
+reboot
