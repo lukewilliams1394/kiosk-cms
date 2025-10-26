@@ -55,6 +55,8 @@ su - kiosk -s /bin/bash <<'EOF'
 set -e
 
 mkdir -p ~/kiosk_assets
+DEBUG_LOG="/home/kiosk/kiosk_debug.log"
+echo "" > $DEBUG_LOG
 
 # --- Splash Screen ---
 cat > ~/kiosk_splash.html <<'EOL'
@@ -65,26 +67,16 @@ cat > ~/kiosk_splash.html <<'EOL'
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Loading</title>
 <style>
-html,body {
-  height:100%; width:100%; margin:0;
-  background:#000; color:#3055A0;
-  display:flex; align-items:center; justify-content:center;
-  font-family:Arial,Helvetica,sans-serif;
-  flex-direction:column; overflow:hidden;
-}
-h1 { font-size:2.5rem; margin-bottom:20px; }
-.loader { display:flex; gap:10px; }
-.dot {
-  width:14px; height:14px; border-radius:50%;
-  background:#3055A0; animation:bounce 1.2s infinite ease-in-out;
-}
+html,body {height:100%;width:100%;margin:0;background:#000;color:#3055A0;
+display:flex;align-items:center;justify-content:center;font-family:Arial,Helvetica,sans-serif;
+flex-direction:column;overflow:hidden;}
+h1 {font-size:2.5rem;margin-bottom:20px;}
+.loader {display:flex;gap:10px;}
+.dot {width:14px;height:14px;border-radius:50%;background:#3055A0;animation:bounce 1.2s infinite ease-in-out;}
 .dot:nth-child(2){animation-delay:.2s}
 .dot:nth-child(3){animation-delay:.4s}
-@keyframes bounce {
-  0%,80%,100%{transform:scale(0)}
-  40%{transform:scale(1)}
-}
-.fadeout { opacity:0; transition:opacity 0.8s ease; }
+@keyframes bounce {0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
+.fadeout {opacity:0;transition:opacity 0.8s ease;}
 </style>
 </head>
 <body>
@@ -109,68 +101,33 @@ cat > ~/kiosk_offline.html <<'EOL'
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Network Disconnected</title>
 <style>
-html,body {
-  height:100%; width:100%; margin:0; padding:0;
-  background:#000; color:#3055A0;
-  font-family:Arial,Helvetica,sans-serif;
-  overflow:hidden; display:flex; align-items:center;
-  justify-content:center; flex-direction:column;
-  transition:opacity 0.8s ease,transform 0.8s ease;
-}
+html,body {height:100%; width:100%; margin:0; padding:0; background:#000; color:#3055A0;
+font-family:Arial,Helvetica,sans-serif; overflow:hidden; display:flex; align-items:center;
+justify-content:center; flex-direction:column; transition:opacity 0.8s ease,transform 0.8s ease;}
 h1 { font-size:2.4rem; margin-bottom:10px; }
 #timer { color:#fff; font-size:1.1rem; }
-.progress {
-  width:350px; max-width:90%; height:12px;
-  background:#111; border-radius:8px; overflow:hidden;
-  margin-top:22px; box-shadow:inset 0 0 8px rgba(0,0,0,0.6);
-}
-.bar {
-  height:100%; width:0%;
-  background:linear-gradient(90deg,#3055A0,#5078C8);
-  transition:width 1s linear;
-}
+.progress { width:350px; max-width:90%; height:12px; background:#111; border-radius:8px; overflow:hidden;
+margin-top:22px; box-shadow:inset 0 0 8px rgba(0,0,0,0.6);}
+.bar { height:100%; width:0%; background:linear-gradient(90deg,#3055A0,#5078C8); transition:width 1s linear;}
 .hint { margin-top:20px; color:#999; font-size:0.9rem; }
 .hidden { opacity:0; transform:translateY(5%); }
 </style>
 </head>
 <body>
-  <h1>Network Disconnected</h1>
-  <div id="timer">Rechecking network in 10s…</div>
-  <div class="progress"><div id="bar" class="bar"></div></div>
-  <div class="hint">The station will retry automatically.</div>
+<h1>Network Disconnected</h1>
+<div id="timer">Rechecking network in 10s…</div>
+<div class="progress"><div id="bar" class="bar"></div></div>
+<div class="hint">The station will retry automatically.</div>
 <script>
 const RETRY_INTERVAL = 10;
 let remaining = RETRY_INTERVAL;
 const timer=document.getElementById('timer');
 const bar=document.getElementById('bar');
-function updateUI(){
-  timer.textContent=\`Rechecking network in \${remaining}s…\`;
-  bar.style.width=((RETRY_INTERVAL-remaining)/RETRY_INTERVAL*100)+'%';
-}
-async function checkOnline(){
-  if(navigator.onLine===false) return false;
-  try{
-    const ctrl=new AbortController();
-    const t=setTimeout(()=>ctrl.abort(),3000);
-    await fetch("https://dns.google/resolve?name=example.com",{signal:ctrl.signal,cache:"no-store"});
-    clearTimeout(t); return true;
-  }catch{return false;}
-}
-function fadeOutAndClose(){
-  document.body.classList.add('hidden');
-  setTimeout(()=>window.close(),900);
-}
-function startCountdown(){
-  updateUI();
-  const tick=setInterval(async()=>{
-    remaining--; updateUI();
-    if(remaining<=0){
-      clearInterval(tick);
-      if(await checkOnline()) fadeOutAndClose();
-      else {remaining=RETRY_INTERVAL; startCountdown();}
-    }
-  },1000);
-}
+function updateUI(){ timer.textContent=`Rechecking network in ${remaining}s…`; bar.style.width=((RETRY_INTERVAL-remaining)/RETRY_INTERVAL*100)+'%'; }
+async function checkOnline(){ if(navigator.onLine===false) return false;
+try{ const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),3000); await fetch("https://dns.google/resolve?name=example.com",{signal:ctrl.signal,cache:"no-store"}); clearTimeout(t); return true;}catch{return false;} }
+function fadeOutAndClose(){ document.body.classList.add('hidden'); setTimeout(()=>window.close(),900); }
+function startCountdown(){ updateUI(); const tick=setInterval(async()=>{ remaining--; updateUI(); if(remaining<=0){ clearInterval(tick); if(await checkOnline()) fadeOutAndClose(); else {remaining=RETRY_INTERVAL; startCountdown();} } },1000); }
 window.addEventListener('online',async()=>{if(await checkOnline())fadeOutAndClose();});
 startCountdown();
 </script>
@@ -191,10 +148,18 @@ amixer -D pulse sset Master 100% || true
 TARGET_URL="http://server02:4040/Tracking/Scanner"
 SPLASH_HTML="file:///home/kiosk/kiosk_splash.html"
 OFFLINE_HTML="file:///home/kiosk/kiosk_offline.html"
+DEBUG_LOG="/home/kiosk/kiosk_debug.log"
 
 check_network() {
-    ping -c1 -W2 8.8.8.8 &>/dev/null && return 0
-    ping -c1 -W2 1.1.1.1 &>/dev/null && return 0
+    echo "$(date '+%F %T') - Checking network..." >> "$DEBUG_LOG"
+    # Try main app
+    curl -s --max-time 3 "$TARGET_URL" >/dev/null 2>&1 && { echo "$(date '+%F %T') - Network OK via TARGET_URL" >> "$DEBUG_LOG"; return 0; }
+    # Try public Microsoft endpoint
+    curl -s --max-time 3 https://www.msftconnecttest.com/connecttest.txt >/dev/null 2>&1 && { echo "$(date '+%F %T') - Network OK via MSFT connect test" >> "$DEBUG_LOG"; return 0; }
+    # Fallback to ping
+    ping -c1 -W2 8.8.8.8 &>/dev/null && { echo "$(date '+%F %T') - Network OK via 8.8.8.8 ping" >> "$DEBUG_LOG"; return 0; }
+    ping -c1 -W2 1.1.1.1 &>/dev/null && { echo "$(date '+%F %T') - Network OK via 1.1.1.1 ping" >> "$DEBUG_LOG"; return 0; }
+    echo "$(date '+%F %T') - Network FAILED" >> "$DEBUG_LOG"
     return 1
 }
 
@@ -206,39 +171,19 @@ launch_edge() {
     echo $!
 }
 
-show_splash() {
-    echo "[KIOSK] Showing splash..."
-    PID=$(launch_edge "$SPLASH_HTML")
-    wait $PID || true
-}
-
-show_offline() {
-    echo "[KIOSK] Showing offline..."
-    espeak-ng "Attention. The scanning station is offline."
-    PID=$(launch_edge "$OFFLINE_HTML")
-    wait $PID || true
-}
-
-launch_kiosk() {
-    echo "[KIOSK] Launching scanner app..."
-    microsoft-edge --start-fullscreen --kiosk "$TARGET_URL" \
-        --no-first-run --disable-infobars \
-        --autoplay-policy=no-user-gesture-required >/dev/null 2>&1 &
-    echo $!
-}
+show_splash() { echo "[KIOSK] Showing splash..."; PID=$(launch_edge "$SPLASH_HTML"); wait $PID || true; }
+show_offline() { echo "[KIOSK] Showing offline..."; espeak-ng "Attention. The scanning station is offline."; PID=$(launch_edge "$OFFLINE_HTML"); wait $PID || true; }
+launch_kiosk() { echo "[KIOSK] Launching scanner app..."; microsoft-edge --start-fullscreen --kiosk "$TARGET_URL" --no-first-run --disable-infobars --autoplay-policy=no-user-gesture-required >/dev/null 2>&1 &; echo $!; }
 
 while true; do
     show_splash
-
     if ! check_network; then
         echo "[KIOSK] No network at startup — offline screen"
         show_offline
         continue
     fi
-
     KIOSK_PID=$(launch_kiosk)
     espeak-ng "Network available. Loading scanning station."
-
     while kill -0 $KIOSK_PID 2>/dev/null; do
         if ! check_network; then
             echo "[KIOSK] Network lost — closing kiosk"
@@ -253,7 +198,6 @@ while true; do
         fi
         sleep 5
     done
-
     echo "[KIOSK] Restarting loop..."
     sleep 3
 done
