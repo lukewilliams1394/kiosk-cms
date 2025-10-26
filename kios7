@@ -1,5 +1,5 @@
 #!/bin/bash
-# Ubuntu 24.04.3 → Microsoft Edge Kiosk with Splash & Offline Pages
+# Ubuntu 24.04.3 → Microsoft Edge Kiosk with Animated Text + Fade-Out Plymouth Splash
 # Run as root
 
 set -e
@@ -10,7 +10,8 @@ apt update && apt upgrade -y
 echo "=== Installing required packages ==="
 apt install --no-install-recommends -y \
     xorg openbox xinit dbus-x11 pulseaudio alsa-utils \
-    curl wget nano systemd-cron espeak espeak-ng xdg-utils x11-xserver-utils
+    curl wget nano systemd-cron espeak-ng xdg-utils x11-xserver-utils \
+    plymouth plymouth-themes
 
 echo "=== Adding Microsoft Edge repository ==="
 curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg
@@ -41,172 +42,50 @@ EOF
 systemctl daemon-reexec
 systemctl daemon-reload
 
-echo "=== Creating kiosk auto-start profile ==="
-sudo -u kiosk bash -c 'cat > /home/kiosk/.bash_profile <<EOP
-if [ -z "\$DISPLAY" ] && [ "\$(tty)" = "/dev/tty1" ]; then
-  startx
-fi
-EOP
-chmod +x /home/kiosk/.bash_profile
-'
-
 echo "=== Setting up kiosk environment ==="
 su - kiosk -s /bin/bash <<'EOF'
 set -e
 
-mkdir -p ~/kiosk_assets
-DEBUG_LOG="/home/kiosk/kiosk_debug.log"
-echo "" > $DEBUG_LOG
+# Auto-start X when logging in on tty1
+cat > ~/.bash_profile <<'EOB'
+if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
+  startx
+fi
+EOB
 
-# --- Splash Screen ---
-cat > ~/kiosk_splash.html <<'EOL'
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Loading</title>
-<style>
-html,body {height:100%;width:100%;margin:0;background:#000;color:#3055A0;
-display:flex;align-items:center;justify-content:center;font-family:Arial,Helvetica,sans-serif;
-flex-direction:column;overflow:hidden;}
-h1 {font-size:2.5rem;margin-bottom:20px;}
-.loader {display:flex;gap:10px;}
-.dot {width:14px;height:14px;border-radius:50%;background:#3055A0;animation:bounce 1.2s infinite ease-in-out;}
-.dot:nth-child(2){animation-delay:.2s}
-.dot:nth-child(3){animation-delay:.4s}
-@keyframes bounce {0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
-.fadeout {opacity:0;transition:opacity 0.8s ease;}
-</style>
-</head>
-<body>
-<h1>Loading Scanning Station</h1>
-<div class="loader"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
-<script>
-setTimeout(()=>{
-  document.body.classList.add('fadeout');
-  setTimeout(()=>window.close(),800);
-},2500);
-</script>
-</body>
-</html>
-EOL
-
-# --- Offline Screen ---
-cat > ~/kiosk_offline.html <<'EOL'
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Network Disconnected</title>
-<style>
-html,body {height:100%; width:100%; margin:0; padding:0; background:#000; color:#3055A0;
-font-family:Arial,Helvetica,sans-serif; overflow:hidden; display:flex; align-items:center;
-justify-content:center; flex-direction:column; transition:opacity 0.8s ease,transform 0.8s ease;}
-h1 { font-size:2.4rem; margin-bottom:10px; }
-#timer { color:#fff; font-size:1.1rem; }
-.progress { width:350px; max-width:90%; height:12px; background:#111; border-radius:8px; overflow:hidden;
-margin-top:22px; box-shadow:inset 0 0 8px rgba(0,0,0,0.6);}
-.bar { height:100%; width:0%; background:linear-gradient(90deg,#3055A0,#5078C8); transition:width 1s linear;}
-.hint { margin-top:20px; color:#999; font-size:0.9rem; }
-.hidden { opacity:0; transform:translateY(5%); }
-</style>
-</head>
-<body>
-<h1>Network Disconnected</h1>
-<div id="timer">Rechecking network in 10s…</div>
-<div class="progress"><div id="bar" class="bar"></div></div>
-<div class="hint">The station will retry automatically.</div>
-<script>
-const RETRY_INTERVAL = 10;
-let remaining = RETRY_INTERVAL;
-const timer=document.getElementById('timer');
-const bar=document.getElementById('bar');
-function updateUI(){ timer.textContent=`Rechecking network in ${remaining}s…`; bar.style.width=((RETRY_INTERVAL-remaining)/RETRY_INTERVAL*100)+'%'; }
-async function checkOnline(){ if(navigator.onLine===false) return false;
-try{ const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(),3000); await fetch("https://dns.google/resolve?name=example.com",{signal:ctrl.signal,cache:"no-store"}); clearTimeout(t); return true;}catch{return false;} }
-function fadeOutAndClose(){ document.body.classList.add('hidden'); setTimeout(()=>window.close(),900); }
-function startCountdown(){ updateUI(); const tick=setInterval(async()=>{ remaining--; updateUI(); if(remaining<=0){ clearInterval(tick); if(await checkOnline()) fadeOutAndClose(); else {remaining=RETRY_INTERVAL; startCountdown();} } },1000); }
-window.addEventListener('online',async()=>{if(await checkOnline())fadeOutAndClose();});
-startCountdown();
-</script>
-</body>
-</html>
-EOL
-
-# --- X session startup ---
+# X session startup script
 cat > ~/.xinitrc <<'EOC'
 #!/bin/bash
 xset s off
 xset -dpms
 xset s noblank
+
 pulseaudio --start
-sleep 2
+sleep 1
 amixer -D pulse sset Master 100% || true
 
 TARGET_URL="http://server02:4040/Tracking/Scanner"
-SPLASH_HTML="file:///home/kiosk/kiosk_splash.html"
-OFFLINE_HTML="file:///home/kiosk/kiosk_offline.html"
-DEBUG_LOG="/home/kiosk/kiosk_debug.log"
-
-check_network() {
-    echo "$(date '+%F %T') - Checking network..." >> "$DEBUG_LOG"
-    # Try main app
-    curl -s --max-time 3 "$TARGET_URL" >/dev/null 2>&1 && { echo "$(date '+%F %T') - Network OK via TARGET_URL" >> "$DEBUG_LOG"; return 0; }
-    # Try public Microsoft endpoint
-    curl -s --max-time 3 https://www.msftconnecttest.com/connecttest.txt >/dev/null 2>&1 && { echo "$(date '+%F %T') - Network OK via MSFT connect test" >> "$DEBUG_LOG"; return 0; }
-    # Fallback to ping
-    ping -c1 -W2 8.8.8.8 &>/dev/null && { echo "$(date '+%F %T') - Network OK via 8.8.8.8 ping" >> "$DEBUG_LOG"; return 0; }
-    ping -c1 -W2 1.1.1.1 &>/dev/null && { echo "$(date '+%F %T') - Network OK via 1.1.1.1 ping" >> "$DEBUG_LOG"; return 0; }
-    echo "$(date '+%F %T') - Network FAILED" >> "$DEBUG_LOG"
-    return 1
-}
-
-launch_edge() {
-    pkill microsoft-edge || true
-    microsoft-edge --start-fullscreen --kiosk \
-      --window-size=1920,1080 --window-position=0,0 \
-      "$1" --no-first-run --disable-infobars >/dev/null 2>&1 &
-    echo $!
-}
-
-show_splash() { echo "[KIOSK] Showing splash..."; PID=$(launch_edge "$SPLASH_HTML"); wait $PID || true; }
-show_offline() { echo "[KIOSK] Showing offline..."; espeak-ng "Attention. The scanning station is offline."; PID=$(launch_edge "$OFFLINE_HTML"); wait $PID || true; }
-launch_kiosk() { echo "[KIOSK] Launching scanner app..."; microsoft-edge --start-fullscreen --kiosk "$TARGET_URL" --no-first-run --disable-infobars --autoplay-policy=no-user-gesture-required >/dev/null 2>&1 &; echo $!; }
 
 while true; do
-    show_splash
-    if ! check_network; then
-        echo "[KIOSK] No network at startup — offline screen"
-        show_offline
-        continue
-    fi
-    KIOSK_PID=$(launch_kiosk)
-    espeak-ng "Network available. Loading scanning station."
-    while kill -0 $KIOSK_PID 2>/dev/null; do
-        if ! check_network; then
-            echo "[KIOSK] Network lost — closing kiosk"
-            kill $KIOSK_PID || true
-            wait $KIOSK_PID || true
-            while ! check_network; do
-                show_offline
-                sleep 2
-            done
-            espeak-ng "Network restored. Scanning station live."
-            break
-        fi
-        sleep 5
-    done
-    echo "[KIOSK] Restarting loop..."
-    sleep 3
+    pkill microsoft-edge || true
+    sleep 1
+    microsoft-edge --kiosk "$TARGET_URL" \
+        --no-first-run \
+        --disable-infobars \
+        --autoplay-policy=no-user-gesture-required \
+        --window-size=1920,1080 \
+        --window-position=0,0 >/dev/null 2>&1 &
+    EDGE_PID=$!
+    wait $EDGE_PID || true
+    echo "[KIOSK] Edge closed or crashed — restarting..."
+    sleep 2
 done
 EOC
 
 chmod +x ~/.xinitrc
 EOF
 
-echo "=== Setting 1920x1080 display ==="
+echo "=== Configuring X11 resolution ==="
 mkdir -p /etc/X11/xorg.conf.d
 cat >/etc/X11/xorg.conf.d/10-monitor.conf <<'EOF'
 Section "Monitor"
@@ -223,14 +102,90 @@ Section "Screen"
 EndSection
 EOF
 
-echo "=== Adding daily reboot ==="
+echo "=== Setting up daily reboot ==="
 systemctl mask ctrl-alt-del.target
 cat >/etc/cron.d/kiosk-reboot <<'EOF'
 0 3 * * * root /sbin/reboot
 EOF
 chmod 644 /etc/cron.d/kiosk-reboot
 
-echo "=== Kiosk installation complete ==="
-echo "System will reboot in 5 seconds..."
+echo "=== Creating animated Plymouth splash with fade-out ==="
+mkdir -p /usr/share/plymouth/themes/centralmailing-kiosk
+
+cat >/usr/share/plymouth/themes/centralmailing-kiosk/centralmailing-kiosk.plymouth <<'EOF'
+[Plymouth Theme]
+Name=Central Mailing Kiosk
+Description=Blue pulsing text with fade-out
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/centralmailing-kiosk
+ScriptFile=/usr/share/plymouth/themes/centralmailing-kiosk/centralmailing-kiosk.script
+EOF
+
+cat >/usr/share/plymouth/themes/centralmailing-kiosk/centralmailing-kiosk.script <<'EOF'
+// Black background, subtle pulsing blue text, fades out before session
+Window.SetBackgroundTopColor (0.0, 0.0, 0.0);
+Window.SetBackgroundBottomColor (0.0, 0.0, 0.0);
+
+var baseColor = [48/255.0, 85/255.0, 160/255.0];
+var screen_w = Window.GetWidth();
+var screen_h = Window.GetHeight();
+var opacity = 1.0;
+var fade_out = false;
+var done = false;
+
+fun draw_text(text, size, y_offset, r, g, b, a) {
+    var t = Text(text, r, g, b);
+    t.SetOpacity(a);
+    t.SetFont("Arial Bold " + size);
+    t.SetY(screen_h / 2 + y_offset);
+    t.SetX((screen_w - t.GetWidth()) / 2);
+    return t;
+}
+
+var phase = 0.0;
+var text = draw_text("Loading Scanning Station…", 28, 0, baseColor[0], baseColor[1], baseColor[2], 1.0);
+
+fun animate() {
+    if (done) return false;
+
+    phase += 0.08;
+    var pulse = (sin(phase) + 1.0) / 2.0;
+    var brightness = 0.6 + (pulse * 0.4);
+    if (fade_out) {
+        opacity -= 0.03;
+        if (opacity <= 0) {
+            opacity = 0;
+            done = true;
+            return false;
+        }
+    }
+
+    text.SetColor(baseColor[0] * brightness, baseColor[1] * brightness, baseColor[2] * brightness);
+    text.SetOpacity(opacity);
+    text.Draw();
+    Plymouth.Sleep(0.05);
+    return true;
+}
+
+// Trigger fade-out when boot finishes
+Plymouth.OnQuit = function() {
+    fade_out = true;
+    while (!done) {
+        animate();
+    }
+}
+
+Plymouth.SetUpdateFunction(animate);
+EOF
+
+plymouth-set-default-theme -R centralmailing-kiosk
+
+# Silence all boot text
+sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=0 vt.global_cursor_default=0"/' /etc/default/grub
+update-grub
+
+echo "=== Installation complete. Rebooting in 5 seconds ==="
 sleep 5
 reboot
