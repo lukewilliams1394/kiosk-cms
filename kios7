@@ -11,7 +11,7 @@ echo "=== Installing required packages ==="
 apt install --no-install-recommends -y \
     xorg openbox xinit dbus-x11 pulseaudio alsa-utils \
     curl wget nano systemd-cron espeak-ng xdg-utils x11-xserver-utils \
-    plymouth plymouth-themes
+    plymouth plymouth-themes plymouth-label
 
 echo "=== Adding Microsoft Edge repository ==="
 curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg
