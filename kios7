@@ -1,5 +1,5 @@
 #!/bin/bash
-# Ubuntu 24.04.3 → Microsoft Edge Kiosk with Animated Text + Fade-Out Plymouth Splash
+# Ubuntu 24.04.3 → Microsoft Edge Kiosk with Animated Plymouth Splash
 # Run as root
 
 set -e
@@ -11,7 +11,7 @@ echo "=== Installing required packages ==="
 apt install --no-install-recommends -y \
     xorg openbox xinit dbus-x11 pulseaudio alsa-utils \
     curl wget nano systemd-cron espeak-ng xdg-utils x11-xserver-utils \
-    plymouth plymouth-themes plymouth-label
+    plymouth plymouth-themes
 
 echo "=== Adding Microsoft Edge repository ==="
 curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg
@@ -110,6 +110,8 @@ EOF
 chmod 644 /etc/cron.d/kiosk-reboot
 
 echo "=== Creating animated Plymouth splash with fade-out ==="
+apt install -y plymouth plymouth-themes
+
 mkdir -p /usr/share/plymouth/themes/centralmailing-kiosk
 
 cat >/usr/share/plymouth/themes/centralmailing-kiosk/centralmailing-kiosk.plymouth <<'EOF'
@@ -180,9 +182,14 @@ Plymouth.OnQuit = function() {
 Plymouth.SetUpdateFunction(animate);
 EOF
 
-plymouth-set-default-theme -R centralmailing-kiosk
+# Register and set as the default Plymouth theme manually
+update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth /usr/share/plymouth/themes/centralmailing-kiosk/centralmailing-kiosk.plymouth 100
+update-alternatives --set default.plymouth /usr/share/plymouth/themes/centralmailing-kiosk/centralmailing-kiosk.plymouth
 
-# Silence all boot text
+# Rebuild initramfs so the new splash applies at boot
+update-initramfs -u
+
+# Silence all boot text and show only splash
 sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=0 vt.global_cursor_default=0"/' /etc/default/grub
 update-grub
 
