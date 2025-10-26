@@ -1,5 +1,5 @@
 #!/bin/bash
-# Ubuntu 24.04.3 → Microsoft Edge Kiosk with Animated Plymouth Splash
+# Ubuntu 24.04.3 → Microsoft Edge Kiosk with Safe Text Splash + Ready Chime
 # Run as root
 
 set -e
@@ -66,6 +66,9 @@ amixer -D pulse sset Master 100% || true
 
 TARGET_URL="http://server02:4040/Tracking/Scanner"
 
+# Play soft ready chime after splash
+espeak-ng "Scanning station ready" --stdout | aplay >/dev/null 2>&1 &
+
 while true; do
     pkill microsoft-edge || true
     sleep 1
@@ -109,87 +112,61 @@ cat >/etc/cron.d/kiosk-reboot <<'EOF'
 EOF
 chmod 644 /etc/cron.d/kiosk-reboot
 
-echo "=== Creating animated Plymouth splash with fade-out ==="
-apt install -y plymouth plymouth-themes
+echo "=== Installing safe Central Mailing text splash ==="
+mkdir -p /usr/share/plymouth/themes/centralmailing-simple
 
-mkdir -p /usr/share/plymouth/themes/centralmailing-kiosk
-
-cat >/usr/share/plymouth/themes/centralmailing-kiosk/centralmailing-kiosk.plymouth <<'EOF'
+cat >/usr/share/plymouth/themes/centralmailing-simple/centralmailing-simple.plymouth <<'EOF'
 [Plymouth Theme]
-Name=Central Mailing Kiosk
-Description=Blue pulsing text with fade-out
-ModuleName=script
+Name=Central Mailing Simple
+Description=Subtle pulsing text splash for scanning kiosk
+ModuleName=text
 
-[script]
-ImageDir=/usr/share/plymouth/themes/centralmailing-kiosk
-ScriptFile=/usr/share/plymouth/themes/centralmailing-kiosk/centralmailing-kiosk.script
+[Text]
+FontFace=mono
+FontSize=24
+ForegroundColor=0x3055A0
+BackgroundStartColor=0x000000
+BackgroundEndColor=0x000000
 EOF
 
-cat >/usr/share/plymouth/themes/centralmailing-kiosk/centralmailing-kiosk.script <<'EOF'
-// Black background, subtle pulsing blue text, fades out before session
-Window.SetBackgroundTopColor (0.0, 0.0, 0.0);
-Window.SetBackgroundBottomColor (0.0, 0.0, 0.0);
+cat >/usr/share/plymouth/themes/centralmailing-simple/centralmailing-simple.script <<'EOF'
+message_text = "Starting Scanning Station…"
+pulse = 0
+increment = 5
+direction = 1
 
-var baseColor = [48/255.0, 85/255.0, 160/255.0];
-var screen_w = Window.GetWidth();
-var screen_h = Window.GetHeight();
-var opacity = 1.0;
-var fade_out = false;
-var done = false;
+fun draw() {
+    my_height = Window.GetHeight()
+    my_width = Window.GetWidth()
 
-fun draw_text(text, size, y_offset, r, g, b, a) {
-    var t = Text(text, r, g, b);
-    t.SetOpacity(a);
-    t.SetFont("Arial Bold " + size);
-    t.SetY(screen_h / 2 + y_offset);
-    t.SetX((screen_w - t.GetWidth()) / 2);
-    return t;
+    progress = abs(sin(pulse / 100.0))
+    alpha = 0.6 + (progress * 0.4)
+
+    Window.Clear()
+    Window.SetBackgroundTopColor(0, 0, 0)
+    Window.SetBackgroundBottomColor(0, 0, 0)
+    Plymouth.DisplayNormalText(message_text, (my_width / 2) - (Text.GetWidth(message_text) / 2), (my_height / 2), alpha)
+    pulse += increment
+    if (pulse > 100 || pulse < 0)
+        increment = -increment
 }
 
-var phase = 0.0;
-var text = draw_text("Loading Scanning Station…", 28, 0, baseColor[0], baseColor[1], baseColor[2], 1.0);
-
-fun animate() {
-    if (done) return false;
-
-    phase += 0.08;
-    var pulse = (sin(phase) + 1.0) / 2.0;
-    var brightness = 0.6 + (pulse * 0.4);
-    if (fade_out) {
-        opacity -= 0.03;
-        if (opacity <= 0) {
-            opacity = 0;
-            done = true;
-            return false;
-        }
-    }
-
-    text.SetColor(baseColor[0] * brightness, baseColor[1] * brightness, baseColor[2] * brightness);
-    text.SetOpacity(opacity);
-    text.Draw();
-    Plymouth.Sleep(0.05);
-    return true;
+fun refresh() {
+    draw()
+    Plymouth.Sleep(0.1)
+    refresh()
 }
 
-// Trigger fade-out when boot finishes
-Plymouth.OnQuit = function() {
-    fade_out = true;
-    while (!done) {
-        animate();
-    }
-}
-
-Plymouth.SetUpdateFunction(animate);
+refresh()
 EOF
 
-# Register and set as the default Plymouth theme manually
-update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth /usr/share/plymouth/themes/centralmailing-kiosk/centralmailing-kiosk.plymouth 100
-update-alternatives --set default.plymouth /usr/share/plymouth/themes/centralmailing-kiosk/centralmailing-kiosk.plymouth
+update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth /usr/share/plymouth/themes/centralmailing-simple/centralmailing-simple.plymouth 100
+update-alternatives --set default.plymouth /usr/share/plymouth/themes/centralmailing-simple/centralmailing-simple.plymouth
 
-# Rebuild initramfs so the new splash applies at boot
+# Rebuild initramfs so splash appears on boot
 update-initramfs -u
 
-# Silence all boot text and show only splash
+# Silence console output and enable splash
 sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=0 vt.global_cursor_default=0"/' /etc/default/grub
 update-grub
 
