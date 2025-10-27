@@ -1,0 +1,175 @@
+#!/bin/bash
+# Ubuntu 24.04.3 → Microsoft Edge Kiosk with Safe Text Splash + Ready Chime
+# Run as root
+
+set -e
+
+echo "=== Updating system ==="
+apt update && apt upgrade -y
+
+echo "=== Installing required packages ==="
+apt install --no-install-recommends -y \
+    xorg openbox xinit dbus-x11 pulseaudio alsa-utils \
+    curl wget nano systemd-cron espeak-ng xdg-utils x11-xserver-utils \
+    plymouth plymouth-themes
+
+echo "=== Adding Microsoft Edge repository ==="
+curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg
+install -o root -g root -m 644 microsoft.gpg /etc/apt/trusted.gpg.d/
+echo "deb [arch=amd64] https://packages.microsoft.com/repos/edge stable main" \
+    > /etc/apt/sources.list.d/microsoft-edge.list
+apt update
+apt install microsoft-edge-stable -y
+rm microsoft.gpg
+
+echo "=== Disabling network-wait ==="
+systemctl disable systemd-networkd-wait-online.service
+systemctl mask systemd-networkd-wait-online.service
+
+echo "=== Creating kiosk user ==="
+if ! id "kiosk" &>/dev/null; then
+    adduser kiosk --gecos "" --disabled-password
+fi
+
+echo "=== Enabling auto-login ==="
+mkdir -p /etc/systemd/system/getty@tty1.service.d
+cat >/etc/systemd/system/getty@tty1.service.d/override.conf <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin kiosk --noclear %I $TERM
+Type=idle
+EOF
+systemctl daemon-reexec
+systemctl daemon-reload
+
+echo "=== Setting up kiosk environment ==="
+su - kiosk -s /bin/bash <<'EOF'
+set -e
+
+# Auto-start X when logging in on tty1
+cat > ~/.bash_profile <<'EOB'
+if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
+  startx
+fi
+EOB
+
+# X session startup script
+cat > ~/.xinitrc <<'EOC'
+#!/bin/bash
+xset s off
+xset -dpms
+xset s noblank
+
+pulseaudio --start
+sleep 1
+amixer -D pulse sset Master 100% || true
+
+TARGET_URL="https://portal.centralmailing.co.uk/Tracking/Scanner"
+
+# Play soft ready chime after splash
+espeak-ng "Scanning station online. Loading system" --stdout | aplay >/dev/null 2>&1 &
+
+while true; do
+    pkill microsoft-edge || true
+    sleep 1
+    microsoft-edge --kiosk "$TARGET_URL" \
+        --no-first-run \
+        --disable-infobars \
+        --autoplay-policy=no-user-gesture-required \
+        --window-size=1920,1080 \
+        --window-position=0,0 >/dev/null 2>&1 &
+    EDGE_PID=$!
+    wait $EDGE_PID || true
+    echo "[KIOSK] Edge closed or crashed — restarting..."
+    sleep 2
+done
+EOC
+
+chmod +x ~/.xinitrc
+EOF
+
+echo "=== Configuring X11 resolution ==="
+mkdir -p /etc/X11/xorg.conf.d
+cat >/etc/X11/xorg.conf.d/10-monitor.conf <<'EOF'
+Section "Monitor"
+    Identifier "Monitor0"
+    Option "PreferredMode" "1920x1080"
+EndSection
+Section "Screen"
+    Identifier "Screen0"
+    Device "Device0"
+    Monitor "Monitor0"
+    SubSection "Display"
+        Modes "1920x1080"
+    EndSubSection
+EndSection
+EOF
+
+echo "=== Setting up daily reboot ==="
+systemctl mask ctrl-alt-del.target
+cat >/etc/cron.d/kiosk-reboot <<'EOF'
+0 3 * * * root /sbin/reboot
+EOF
+chmod 644 /etc/cron.d/kiosk-reboot
+
+echo "=== Installing safe Central Mailing text splash ==="
+mkdir -p /usr/share/plymouth/themes/centralmailing-simple
+
+cat >/usr/share/plymouth/themes/centralmailing-simple/centralmailing-simple.plymouth <<'EOF'
+[Plymouth Theme]
+Name=Central Mailing Simple
+Description=Subtle pulsing text splash for scanning kiosk
+ModuleName=text
+
+[Text]
+FontFace=mono
+FontSize=24
+ForegroundColor=0x3055A0
+BackgroundStartColor=0x000000
+BackgroundEndColor=0x000000
+EOF
+
+cat >/usr/share/plymouth/themes/centralmailing-simple/centralmailing-simple.script <<'EOF'
+message_text = "Starting Scanning Station…"
+pulse = 0
+increment = 5
+direction = 1
+
+fun draw() {
+    my_height = Window.GetHeight()
+    my_width = Window.GetWidth()
+
+    progress = abs(sin(pulse / 100.0))
+    alpha = 0.6 + (progress * 0.4)
+
+    Window.Clear()
+    Window.SetBackgroundTopColor(0, 0, 0)
+    Window.SetBackgroundBottomColor(0, 0, 0)
+    Plymouth.DisplayNormalText(message_text, (my_width / 2) - (Text.GetWidth(message_text) / 2), (my_height / 2), alpha)
+    pulse += increment
+    if (pulse > 100 || pulse < 0)
+        increment = -increment
+}
+
+fun refresh() {
+    draw()
+    Plymouth.Sleep(0.1)
+    refresh()
+}
+
+refresh()
+EOF
+
+update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth /usr/share/plymouth/themes/centralmailing-simple/centralmailing-simple.plymouth 100
+update-alternatives --set default.plymouth /usr/share/plymouth/themes/centralmailing-simple/centralmailing-simple.plymouth
+
+# Rebuild initramfs so splash appears on boot
+update-initramfs -u
+
+# Silence console output and enable splash
+sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=0 vt.global_cursor_default=0"/' /etc/default/grub
+update-grub
+
+echo "=== Installation complete. Rebooting in 5 seconds ==="
+sleep 5
+reboot
